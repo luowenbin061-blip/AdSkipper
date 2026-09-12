@@ -360,12 +360,15 @@ static void stopAndCleanup(void) {
     if (g_tokenLaunch)  { [[NSNotificationCenter defaultCenter] removeObserver:g_tokenLaunch];  g_tokenLaunch = nil; }
 }
 
-// 找可用来弹窗的 VC（最上层窗口的 rootViewController）
+// 找可用来弹窗的 VC（App 主窗口的 rootViewController）
+// 注意：必须跳过自己的悬浮球窗口（level Alert+99 全场最高，否则菜单会弹进 40x40 的小圆窗里 = 视觉上"没反应"）
+static UIWindow *g_ballWin = nil;   // 前置声明：presentVC 要跳过它
 static UIViewController *presentVC(void) {
     UIWindow *win = nil;
     for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
         if (![s isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *w in ((UIWindowScene *)s).windows) {
+            if (w == g_ballWin) continue;              // 跳过自己的悬浮球窗口
             if (w.hidden || !w.rootViewController) continue;
             if (!win || w.windowLevel > win.windowLevel) win = w;
         }
@@ -382,7 +385,6 @@ static void showSettings(void);
 static void showReport(NSString *msg);
 static void startMonitor(void);
 
-static UIWindow *g_ballWin = nil;
 static NSString *g_lastReport = @"(还没有运行记录)";
 
 // 自测模式：NSUserDefaults "adskipper_selftest"=YES 时，
@@ -393,7 +395,8 @@ static UIImage *g_selftestImg = nil;
 static void showMenu(void);
 static void createFloatingBall(void);
 
-// 按钮子类：直接接管触摸，不走 UIControl 事件（避免被拖动手势吞掉轻点）
+// 按钮子类：只做视觉反馈（按下变亮）。菜单触发交给 tap 手势（见 ASBallHelper），
+// 不再走 touchesEnded——拖动手势会 cancel 掉 touches，导致"移动永远灵、点击永远死"。
 @interface ASBallButton : UIButton
 @end
 @implementation ASBallButton
@@ -402,34 +405,39 @@ static void createFloatingBall(void);
     self.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.72];   // 按下变亮 = 触摸已收到
     ALog(@"ball touch began");
 }
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesEnded:touches withEvent:event];
-    self.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
-    ALog(@"ball tap → opening menu");
-    showMenu();
-}
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [super touchesCancelled:touches withEvent:event];
     self.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
-    ALog(@"ball touch cancelled (moved?)");
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    self.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
 }
 @end
 
+// 手势驱动：tap → 菜单；pan → 拖动（tap/pan 挂同一 view，系统自动仲裁：单击=pan失败+tap成功，拖动=pan成功+tap失败）
 @interface ASBallHelper : NSObject
++ (void)onTap:(UITapGestureRecognizer *)t;
 + (void)onDrag:(UIPanGestureRecognizer *)p;
 @end
 
 @implementation ASBallHelper
++ (void)onTap:(UITapGestureRecognizer *)t {
+    ALog(@"ball tap recognized → opening menu");
+    showMenu();
+}
 + (void)onDrag:(UIPanGestureRecognizer *)p {
-    UIView *v = p.view;
-    CGPoint t = [p translationInView:v];
-    CGPoint c = v.center;
-    c.x += t.x; c.y += t.y;
-    CGSize scr = [UIScreen mainScreen].bounds.size;
-    c.x = MIN(MAX(c.x, 24), scr.width - 24);
-    c.y = MIN(MAX(c.y, 24), scr.height - 24);
-    v.center = c;
-    [p setTranslation:CGPointZero inView:v];
+    UIWindow *w = g_ballWin;
+    if (!w) return;
+    CGPoint tr = [p translationInView:w];
+    CGPoint c = w.center;
+    c.x += tr.x; c.y += tr.y;
+    CGSize scr = w.screen.bounds.size;
+    c.x = MIN(MAX(c.x, 20), scr.width - 20);
+    c.y = MIN(MAX(c.y, 20), scr.height - 20);
+    w.center = c;
+    [p setTranslation:CGPointZero inView:w];
+    if (p.state == UIGestureRecognizerStateEnded) ALog(@"ball moved to (%.0f, %.0f)", c.x, c.y);
 }
 @end
 
@@ -450,12 +458,12 @@ static void createFloatingBall(void) {
         w.frame = CGRectMake(scr.width - bs - 6, scr.height * 0.22, bs, bs);
         w.windowLevel = UIWindowLevelAlert + 99;
         w.backgroundColor = [UIColor clearColor];
-        UIViewController *rvc = [UIViewController new];
-        w.rootViewController = rvc;
-        [rvc loadViewIfNeeded];   // 强制加载 rootVC.view，避免它延迟加载后盖住按钮
+        // 关键：不设 rootViewController——它延迟加载的透明 view 会盖住按钮，
+        // 且会让 presentVC 误抓本窗口（菜单弹进 40x40 小圆窗 = 看不见）
+        w.userInteractionEnabled = YES;
 
         ASBallButton *b = [ASBallButton buttonWithType:UIButtonTypeCustom];
-        b.frame = rvc.view.bounds;
+        b.frame = w.bounds;
         b.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         b.layer.cornerRadius = bs / 2.0;
         b.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
@@ -466,16 +474,19 @@ static void createFloatingBall(void) {
         b.titleLabel.font = [UIFont boldSystemFontOfSize:17];
         b.userInteractionEnabled = YES;
 
-        // 按钮挂 rootVC.view（窗口的正式内容层），拖动手势挂在窗口层
-        [rvc.view addSubview:b];
+        UITapGestureRecognizer *tap =
+            [[UITapGestureRecognizer alloc] initWithTarget:[ASBallHelper class] action:@selector(onTap:)];
         UIPanGestureRecognizer *pan =
             [[UIPanGestureRecognizer alloc] initWithTarget:[ASBallHelper class] action:@selector(onDrag:)];
-        [w addGestureRecognizer:pan];
+        pan.cancelsTouchesInView = NO;   // 不抢按钮的触摸（拖动判定由手势自身状态决定）
+        [b addGestureRecognizer:tap];
+        [b addGestureRecognizer:pan];
 
         [w addSubview:b];
         w.hidden = NO;
         g_ballWin = w;
-        ALog(@"floating ball created at (%.0f, %.0f)", w.frame.origin.x, w.frame.origin.y);
+        ALog(@"floating ball created at (%.0f, %.0f) [v3.3 gesture-driven]",
+             w.frame.origin.x, w.frame.origin.y);
     } @catch (NSException *e) {
         ALog(@"ball exception: %@", e);
     }
@@ -483,7 +494,11 @@ static void createFloatingBall(void) {
 
 static void showMenu(void) {
     UIViewController *vc = presentVC();
-    if (!vc) return;
+    if (!vc) {
+        ALog(@"showMenu FAILED: no app window/rootVC to present on");
+        return;
+    }
+    ALog(@"showMenu on vc=%@ (window level %.0f)", vc, vc.view.window.windowLevel);
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"AdSkipper"
         message:[NSString stringWithFormat:@"监控 %@ · %@", g_done ? @"已结束" : @"待命中", g_lastReport]
         preferredStyle:UIAlertControllerStyleActionSheet];
@@ -504,7 +519,7 @@ static void showMenu(void) {
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"关闭菜单" style:UIAlertActionStyleCancel handler:nil]];
     [vc presentViewController:ac animated:YES completion:nil];
-    ALog(@"menu present called on vc=%@ (window level %.0f)", vc, vc.view.window.windowLevel);
+    ALog(@"menu present called (target vc=%@)", vc);
 }
 
 // 诊断报告弹窗：命中时弹出反馈；未命中只记录（悬浮球菜单里看）
@@ -832,6 +847,6 @@ static void adskipper_init(void) {
         // 双保险：1.5 秒后再试一次悬浮球（scene 可能刚就绪）
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ createFloatingBall(); });
-        ALog(@"armed (v3, ball + watch for splash-ad buttons)");
+        ALog(@"armed (v3.3, gesture-driven ball + watch for splash-ad buttons)");
     });
 }
