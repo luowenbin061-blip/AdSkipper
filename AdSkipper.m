@@ -641,6 +641,19 @@ static void startMonitor(void) {
                 CGSize pts = CGSizeMake(img.size.width / img.scale,
                                         img.size.height / img.scale);
 
+                // 诊断（一次性）：首轮截屏落盘，远程诊断"OCR 到底看到了什么"
+                static BOOL g_shotSaved = NO;
+                if (!g_shotSaved) {
+                    g_shotSaved = YES;
+                    NSData *png = UIImagePNGRepresentation(img);
+                    NSString *doc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+                    if (png && doc) {
+                        [png writeToFile:[doc stringByAppendingPathComponent:@"AdSkipper_shot.png"] atomically:YES];
+                        ALog(@"debug screenshot saved (%.0fx%.0f pts, scale %.0fx)",
+                             pts.width, pts.height, img.scale);
+                    }
+                }
+
                 // 灰度图（×启发式与按钮验证共用）
                 GrayMap gm;
                 BOOL hasGray = grayFromImage(img, &gm);

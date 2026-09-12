@@ -60,6 +60,8 @@ jobs:
             cat "$DATA/Documents/AdSkipper.log"
             echo "==============================================="
             cp "$DATA/Documents/AdSkipper.log" sim.log
+            cp "$DATA/Documents/AdSkipper_shot.png" shot.png 2>/dev/null || echo "no shot"
+            ls -la shot.png 2>/dev/null || true
           else
             echo "!!! AdSkipper.log NOT FOUND - dylib was NOT loaded"
             echo "dylib not loaded" > sim.log
@@ -88,4 +90,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sim-log
-          path: sim.log
+          path: |
+            sim.log
+            shot.png
