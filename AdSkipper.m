@@ -16,6 +16,7 @@
 #import <UIKit/UIKit.h>
 #import <Vision/Vision.h>
 #import <QuartzCore/QuartzCore.h>
+#import <stdio.h>
 
 #pragma mark - 可调参数（第一版内置规则）
 
@@ -47,8 +48,33 @@ static BOOL g_armed = NO;      // 通知已挂
 static BOOL g_started = NO;    // 监控已启动
 static BOOL g_done = NO;       // 已点击/已结束
 static int  g_crossStreak = 0; // ×连续出现计数
+static int  g_rounds = 0;      // 本轮监控累计轮数
+static int  g_ocrTexts = 0;    // 累计 OCR 识别条数（诊断用）
 
-#define ALog(fmt, ...) NSLog(@"[AdSkipper] " fmt, ##__VA_ARGS__)
+// 日志同时写进 App 沙盒 Documents/AdSkipper.log（不用连电脑也能取证据）
+static void logToFile(NSString *msg) {
+    @try {
+        static NSString *path = nil;
+        static NSDateFormatter *df = nil;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/AdSkipper.log"];
+            df = [[NSDateFormatter alloc] init];
+            df.dateFormat = @"HH:mm:ss.SSS";
+            FILE *f = fopen(path.fileSystemRepresentation, "a");
+            if (f) { fputs("---- session ----\n", f); fclose(f); }
+        });
+        NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [df stringFromDate:[NSDate date]], msg];
+        FILE *f = fopen(path.fileSystemRepresentation, "a");
+        if (f) { fputs(line.UTF8String, f); fclose(f); }
+    } @catch (NSException *e) { /* 日志失败不影响主功能 */ }
+}
+
+#define ALog(fmt, ...) do { \
+    NSString *_m = [NSString stringWithFormat:(fmt), ##__VA_ARGS__]; \
+    NSLog(@"[AdSkipper] %@", _m); \
+    logToFile(_m); \
+} while (0)
 
 #pragma mark - 灰度位图工具
 
@@ -314,6 +340,32 @@ static void stopAndCleanup(void) {
     if (g_tokenLaunch)  { [[NSNotificationCenter defaultCenter] removeObserver:g_tokenLaunch];  g_tokenLaunch = nil; }
 }
 
+// 诊断报告弹窗：监控结束 / 命中后弹出，证明 dylib 已加载 + 说明结果
+static void showReport(NSString *msg) {
+    ALog(@"report: %@", msg);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *win = nil;
+            for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+                if (![s isKindOfClass:[UIWindowScene class]]) continue;
+                for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                    if (w.hidden || !w.rootViewController) continue;
+                    if (!win || w.windowLevel > win.windowLevel) win = w;
+                }
+            }
+            if (!win) return;
+            UIViewController *vc = win.rootViewController;
+            while (vc.presentedViewController) vc = vc.presentedViewController;
+            UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"AdSkipper"
+                message:msg preferredStyle:UIAlertControllerStyleAlert];
+            [ac addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+            [vc presentViewController:ac animated:YES completion:nil];
+        } @catch (NSException *e) {
+            ALog(@"report exception: %@", e);
+        }
+    });
+}
+
 static void startMonitor(void) {
     if (g_started || g_done) return;
     g_started = YES;
@@ -323,6 +375,7 @@ static void startMonitor(void) {
 
     dispatch_async(g_queue, ^{
         while (!g_done && CACurrentMediaTime() < deadline) {
+            g_rounds++;
             @autoreleasepool {
                 // App 在前台才跑
                 __block BOOL active = NO;
@@ -376,6 +429,7 @@ static void startMonitor(void) {
                 __block NSString *hitWhy = @"";
 
                 runOCR(img, ^(NSArray *results) {
+                    g_ocrTexts += (int)results.count;
                     for (VNObservation *o in results) {
                         if (![o isKindOfClass:[VNRecognizedTextObservation class]]) continue;
                         VNRecognizedTextObservation *obs = (VNRecognizedTextObservation *)o;
@@ -441,6 +495,8 @@ static void startMonitor(void) {
                     ALog(@"hit (%@) at (%.0f, %.0f) → tapping", hitWhy, hitPt.x, hitPt.y);
                     if (tapAtPoint(hitPt, winsDesc)) {
                         ALog(@"tapped OK, done");
+                        showReport([NSString stringWithFormat:@"✅ 已自动点击\n识别来源：%@（第 %d 轮，共识别文字 %d 条）",
+                                    hitWhy, g_rounds, g_ocrTexts]);
                         stopAndCleanup();
                         break;
                     }
@@ -449,7 +505,9 @@ static void startMonitor(void) {
             }
         }
         if (!g_done) {
-            ALog(@"watch window ended without hit");
+            ALog(@"watch window ended without hit (rounds=%d, ocrTexts=%d)", g_rounds, g_ocrTexts);
+            showReport([NSString stringWithFormat:@"⏱ 10 秒内未识别到广告按钮\n监控 %d 轮 · OCR 共识别文字 %d 条\n（若识别 0 条，该 App 可能不支持截屏）",
+                        g_rounds, g_ocrTexts]);
             stopAndCleanup();
         }
     });
