@@ -385,8 +385,29 @@ static void startMonitor(void);
 static UIWindow *g_ballWin = nil;
 static NSString *g_lastReport = @"(还没有运行记录)";
 
+// 按钮子类：直接接管触摸，不走 UIControl 事件（避免被拖动手势吞掉轻点）
+@interface ASBallButton : UIButton
+@end
+@implementation ASBallButton
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    self.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.72];   // 按下变亮 = 触摸已收到
+    ALog(@"ball touch began");
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    self.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
+    ALog(@"ball tap → opening menu");
+    showMenu();
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    self.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
+    ALog(@"ball touch cancelled (moved?)");
+}
+@end
+
 @interface ASBallHelper : NSObject
-+ (void)onTap;
 + (void)onDrag:(UIPanGestureRecognizer *)p;
 @end
 
@@ -394,13 +415,12 @@ static void showMenu(void);
 static void createFloatingBall(void);
 
 @implementation ASBallHelper
-+ (void)onTap { showMenu(); }
 + (void)onDrag:(UIPanGestureRecognizer *)p {
     UIView *v = p.view;
     CGPoint t = [p translationInView:v];
     CGPoint c = v.center;
     c.x += t.x; c.y += t.y;
-    CGSize scr = v.superview.bounds.size;
+    CGSize scr = [UIScreen mainScreen].bounds.size;
     c.x = MIN(MAX(c.x, 24), scr.width - 24);
     c.y = MIN(MAX(c.y, 24), scr.height - 24);
     v.center = c;
@@ -427,7 +447,7 @@ static void createFloatingBall(void) {
         w.backgroundColor = [UIColor clearColor];
         w.rootViewController = [UIViewController new];
 
-        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+        ASBallButton *b = [ASBallButton buttonWithType:UIButtonTypeCustom];
         b.frame = w.bounds;
         b.layer.cornerRadius = bs / 2.0;
         b.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
@@ -436,10 +456,12 @@ static void createFloatingBall(void) {
         b.clipsToBounds = YES;
         [b setTitle:@"A" forState:UIControlStateNormal];
         b.titleLabel.font = [UIFont boldSystemFontOfSize:17];
-        [b addTarget:[ASBallHelper class] action:@selector(onTap) forControlEvents:UIControlEventTouchUpInside];
+        b.userInteractionEnabled = YES;
+
+        // 拖动手势挂在窗口层，与按钮的触摸处理解耦
         UIPanGestureRecognizer *pan =
             [[UIPanGestureRecognizer alloc] initWithTarget:[ASBallHelper class] action:@selector(onDrag:)];
-        [b addGestureRecognizer:pan];
+        [w addGestureRecognizer:pan];
 
         [w addSubview:b];
         w.hidden = NO;
@@ -473,6 +495,7 @@ static void showMenu(void) {
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"关闭菜单" style:UIAlertActionStyleCancel handler:nil]];
     [vc presentViewController:ac animated:YES completion:nil];
+    ALog(@"menu present called on vc=%@ (window level %.0f)", vc, vc.view.window.windowLevel);
 }
 
 // 诊断报告弹窗：命中时弹出反馈；未命中只记录（悬浮球菜单里看）
