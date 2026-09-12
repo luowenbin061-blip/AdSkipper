@@ -40,6 +40,25 @@ static const int kBtnContrastMin = 22;
 
 static NSArray<NSString *> *kKeywords;              // 文字规则（init 时填）
 
+#pragma mark - 配置（保存于宿主 App 沙盒 NSUserDefaults，弹窗里改）
+
+static NSArray<NSString *> *loadKeywords(void) {
+    NSString *custom = [[NSUserDefaults standardUserDefaults] stringForKey:@"adskipper_keywords"];
+    if (custom.length) {
+        NSMutableArray *ks = [NSMutableArray array];
+        for (NSString *p in [custom componentsSeparatedByString:@","]) {
+            NSString *t = [p stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (t.length) [ks addObject:t];
+        }
+        if (ks.count) return ks;
+    }
+    return @[ @"跳过", @"关闭广告", @"skip" ];
+}
+
+static NSString *fixedTapSpec(void) {
+    return [[NSUserDefaults standardUserDefaults] stringForKey:@"adskipper_taps"];
+}
+
 #pragma mark - 全局状态
 
 static dispatch_queue_t g_queue;
@@ -52,20 +71,21 @@ static int  g_rounds = 0;      // 本轮监控累计轮数
 static int  g_ocrTexts = 0;    // 累计 OCR 识别条数（诊断用）
 
 // 日志同时写进 App 沙盒 Documents/AdSkipper.log（不用连电脑也能取证据）
+static NSString *g_logPath = nil;
+
 static void logToFile(NSString *msg) {
     @try {
-        static NSString *path = nil;
         static NSDateFormatter *df = nil;
         static dispatch_once_t once;
         dispatch_once(&once, ^{
-            path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/AdSkipper.log"];
+            g_logPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/AdSkipper.log"];
             df = [[NSDateFormatter alloc] init];
             df.dateFormat = @"HH:mm:ss.SSS";
-            FILE *f = fopen(path.fileSystemRepresentation, "a");
+            FILE *f = fopen(g_logPath.fileSystemRepresentation, "a");
             if (f) { fputs("---- session ----\n", f); fclose(f); }
         });
         NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [df stringFromDate:[NSDate date]], msg];
-        FILE *f = fopen(path.fileSystemRepresentation, "a");
+        FILE *f = fopen(g_logPath.fileSystemRepresentation, "a");
         if (f) { fputs(line.UTF8String, f); fclose(f); }
     } @catch (NSException *e) { /* 日志失败不影响主功能 */ }
 }
@@ -340,25 +360,101 @@ static void stopAndCleanup(void) {
     if (g_tokenLaunch)  { [[NSNotificationCenter defaultCenter] removeObserver:g_tokenLaunch];  g_tokenLaunch = nil; }
 }
 
+// 找可用来弹窗的 VC（最上层窗口的 rootViewController）
+static UIViewController *presentVC(void) {
+    UIWindow *win = nil;
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if (![s isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)s).windows) {
+            if (w.hidden || !w.rootViewController) continue;
+            if (!win || w.windowLevel > win.windowLevel) win = w;
+        }
+    }
+    if (!win) return nil;
+    UIViewController *vc = win.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    return vc;
+}
+
+// 坐标序列回放："x1,y1,等几秒;x2,y2,等几秒"（等几秒 = 相对当前时刻的延迟基数，逐段各自计时）
+static void scheduleFixedTaps(NSString *spec) {
+    if (spec.length == 0) return;
+    for (NSString *part in [spec componentsSeparatedByString:@";"]) {
+        NSArray *v = [part componentsSeparatedByString:@","];
+        if (v.count < 2) continue;
+        CGFloat x = [v[0] doubleValue], y = [v[1] doubleValue];
+        NSTimeInterval delay = v.count > 2 ? [v[2] doubleValue] : 0;
+        if (x <= 0 && y <= 0) continue;
+        NSString *dbg = part;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            NSMutableArray *arr = [NSMutableArray array];
+            for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+                if (![s isKindOfClass:[UIWindowScene class]]) continue;
+                [arr addObjectsFromArray:((UIWindowScene *)s).windows];
+            }
+            [arr sortUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b) {
+                if (a.windowLevel > b.windowLevel) return NSOrderedAscending;
+                if (a.windowLevel < b.windowLevel) return NSOrderedDescending;
+                return NSOrderedSame;
+            }];
+            BOOL ok = tapAtPoint(CGPointMake(x, y), arr);
+            ALog(@"fixed tap (%@) → %@", dbg, ok ? @"OK" : @"FAIL(no control at point)");
+        });
+    }
+}
+
+// 设置界面：自定义关键词 + 坐标回放
+static void showSettings(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc = presentVC();
+        if (!vc) return;
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"AdSkipper 设置"
+            message:@"关键词：逗号分隔，识别到就点（留空=默认）。坐标：x,y,等几秒，多段用分号隔开，如 390,300,1.5;200,700,4（x=屏宽比例位置用屏幕逻辑分辨率，竖屏 iPhone 常见宽 390/393/430）"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+            tf.text = [[NSUserDefaults standardUserDefaults] stringForKey:@"adskipper_keywords"] ?: @"";
+            tf.placeholder = @"跳过,关闭广告,skip";
+            tf.clearButtonMode = UITextFieldViewModeAlways;
+        }];
+        [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+            tf.text = [[NSUserDefaults standardUserDefaults] stringForKey:@"adskipper_taps"] ?: @"";
+            tf.placeholder = @"390,300,1.5（留空=不用坐标点击）";
+            tf.clearButtonMode = UITextFieldViewModeAlways;
+        }];
+        [ac addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+            [ud setObject:ac.textFields[0].text ?: @"" forKey:@"adskipper_keywords"];
+            [ud setObject:ac.textFields[1].text ?: @"" forKey:@"adskipper_taps"];
+            [ud synchronize];
+            kKeywords = loadKeywords();
+            ALog(@"settings saved: keywords='%@' taps='%@'", ac.textFields[0].text, ac.textFields[1].text);
+            NSString *taps = fixedTapSpec();
+            if (taps.length) scheduleFixedTaps(taps);   // 立即试跑，方便现场验证坐标
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [vc presentViewController:ac animated:YES completion:nil];
+    });
+}
+
 // 诊断报告弹窗：监控结束 / 命中后弹出，证明 dylib 已加载 + 说明结果
 static void showReport(NSString *msg) {
     ALog(@"report: %@", msg);
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
-            UIWindow *win = nil;
-            for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-                if (![s isKindOfClass:[UIWindowScene class]]) continue;
-                for (UIWindow *w in ((UIWindowScene *)s).windows) {
-                    if (w.hidden || !w.rootViewController) continue;
-                    if (!win || w.windowLevel > win.windowLevel) win = w;
-                }
-            }
-            if (!win) return;
-            UIViewController *vc = win.rootViewController;
-            while (vc.presentedViewController) vc = vc.presentedViewController;
+            UIViewController *vc = presentVC();
+            if (!vc) return;
             UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"AdSkipper"
                 message:msg preferredStyle:UIAlertControllerStyleAlert];
-            [ac addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+            [ac addAction:[UIAlertAction actionWithTitle:@"⚙ 设置" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+                showSettings();
+            }]];
+            [ac addAction:[UIAlertAction actionWithTitle:@"📋 复制日志" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+                NSString *log = [NSString stringWithContentsOfFile:g_logPath
+                                                          encoding:NSUTF8StringEncoding error:nil];
+                [UIPasteboard generalPasteboard].string = log ?: @"(日志为空)";
+            }]];
+            [ac addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
             [vc presentViewController:ac animated:YES completion:nil];
         } @catch (NSException *e) {
             ALog(@"report exception: %@", e);
@@ -370,6 +466,11 @@ static void startMonitor(void) {
     if (g_started || g_done) return;
     g_started = YES;
     ALog(@"monitor start (window %.0fs)", kWatchWindow);
+    NSString *taps = fixedTapSpec();
+    if (taps.length) {
+        ALog(@"fixed taps scheduled: %@", taps);
+        scheduleFixedTaps(taps);
+    }
 
     NSTimeInterval deadline = CACurrentMediaTime() + kWatchWindow;
 
@@ -430,6 +531,14 @@ static void startMonitor(void) {
 
                 runOCR(img, ^(NSArray *results) {
                     g_ocrTexts += (int)results.count;
+                    // 诊断：把每轮识别到的文字全写进日志（用户可一键复制发回）
+                    NSMutableString *all = [NSMutableString string];
+                    for (VNObservation *o in results) {
+                        if (![o isKindOfClass:[VNRecognizedTextObservation class]]) continue;
+                        VNRecognizedText *tt = [((VNRecognizedTextObservation *)o) topCandidates:1].firstObject;
+                        if (tt.string.length) [all appendFormat:@"%@ / ", tt.string];
+                    }
+                    if (all.length) ALog(@"round %d ocr: %@", g_rounds, all);
                     for (VNObservation *o in results) {
                         if (![o isKindOfClass:[VNRecognizedTextObservation class]]) continue;
                         VNRecognizedTextObservation *obs = (VNRecognizedTextObservation *)o;
@@ -454,15 +563,17 @@ static void startMonitor(void) {
                         if (kw) {
                             // 文字规则：几何过滤 + 按钮对比度验证（防误点广告文案）
                             CGFloat ar = r.size.width / MAX(r.size.height, 0.1);
-                            if (r.size.height >= kTextMinH && r.size.height <= kTextMaxH &&
-                                ar <= kTextMaxAR && hasGray &&
-                                looksLikeButton(&gm,
-                                    CGRectMake(r.origin.x * pxPerPt, r.origin.y * pxPerPt,
-                                               r.size.width * pxPerPt, r.size.height * pxPerPt))) {
+                            BOOL geomOK = (r.size.height >= kTextMinH && r.size.height <= kTextMaxH && ar <= kTextMaxAR);
+                            BOOL btnOK = hasGray && looksLikeButton(&gm,
+                                CGRectMake(r.origin.x * pxPerPt, r.origin.y * pxPerPt,
+                                           r.size.width * pxPerPt, r.size.height * pxPerPt));
+                            if (geomOK && btnOK) {
                                 hitPt = CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r));
                                 found = YES; hitWhy = [NSString stringWithFormat:@"text '%@'", s];
                                 break;
                             }
+                            ALog(@"candidate '%@' rejected (geom=%@ h=%.0f ar=%.1f contrast=%@)",
+                                 s, geomOK ? @"OK" : @"BAD", r.size.height, ar, btnOK ? @"OK" : @"BAD");
                         } else if (shortX && inTopRight) {
                             // 右上角孤立 X/×/✕ 字符
                             hitPt = CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r));
@@ -472,21 +583,27 @@ static void startMonitor(void) {
                     }
                 });
 
-                // ③ 图形×启发式（右上角 ROI，连续 2 帧确认）
+                // ③ 图形×启发式（右上 + 右下两个 ROI，连续 2 帧确认）
                 if (!found && hasGray) {
                     CGFloat roiW = MIN(kCrossROISize * pxPerPt, gm.w * 0.5);
                     CGFloat roiH = MIN(kCrossROISize * pxPerPt, gm.h * 0.5);
-                    CGRect roi = CGRectMake(gm.w - roiW, 0, roiW, roiH);
-                    CGPoint cPx = CGPointZero;
-                    if (crossHeuristic(&gm, roi, &cPx)) {
-                        g_crossStreak++;
-                        if (g_crossStreak >= kCrossStreakNeed) {
-                            hitPt = CGPointMake(cPx.x / pxPerPt, cPx.y / pxPerPt);
-                            found = YES; hitWhy = @"cross-mark";
+                    CGRect rois[2] = {
+                        CGRectMake(gm.w - roiW, 0, roiW, roiH),            // 右上
+                        CGRectMake(gm.w - roiW, gm.h - roiH, roiW, roiH),  // 右下
+                    };
+                    for (int i = 0; i < 2 && !found; i++) {
+                        CGPoint cPx = CGPointZero;
+                        if (crossHeuristic(&gm, rois[i], &cPx)) {
+                            g_crossStreak++;
+                            if (g_crossStreak >= kCrossStreakNeed) {
+                                hitPt = CGPointMake(cPx.x / pxPerPt, cPx.y / pxPerPt);
+                                found = YES;
+                                hitWhy = (i == 0) ? @"cross-topright" : @"cross-bottomright";
+                            }
+                            break;
                         }
-                    } else {
-                        g_crossStreak = 0;
                     }
+                    if (!found) g_crossStreak = 0;
                 }
                 grayFree(&gm);
 
@@ -520,7 +637,7 @@ static void adskipper_init(void) {
     if (g_armed) return;
     g_armed = YES;
     g_queue = dispatch_queue_create("wb.adskipper.monitor", DISPATCH_QUEUE_SERIAL);
-    kKeywords = @[@"跳过", @"关闭广告", @"skip"];
+    kKeywords = loadKeywords();
 
     // constructor 时 UIKit 尚未就绪 → 延迟后挂通知（MiMo 评审意见：别在 constructor 里直接跑）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kStartupDelay * NSEC_PER_SEC)),
