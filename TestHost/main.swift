@@ -1,7 +1,13 @@
 import UIKit
+import Darwin
 
-// 最小测试宿主：启动显示"假开屏广告"（红底 + 跳过按钮 + 右上角×），
-// AdSkipper 若工作会自动点掉按钮切到主页。print 输出供 workflow 断言。
+// ===== 顶层代码（main.swift）：最早执行，先加载插件再启动 App =====
+// 真机上由 TrollFools 注入加载；模拟器测试里用 dlopen 等效模拟（同样在 main 之前）。
+let _dylibPath = Bundle.main.bundlePath + "/AdSkipper_sim.dylib"
+let _handle = dlopen(_dylibPath, RTLD_NOW)
+FileHandle.standardError.write(Data("dlopen(\(_dylibPath)) → \(_handle != nil ? "OK" : "FAILED")\n".utf8))
+
+// ===== 最小测试宿主：假开屏广告 =====
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
@@ -38,15 +44,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             lb.font = .boldSystemFont(ofSize: 20)
             home.view.addSubview(lb)
             win.rootViewController = home
-            print("[TestHost] HOME_SHOWN via \(who)")
+            FileHandle.standardError.write(Data("[TestHost] HOME_SHOWN via \(who)\n".utf8))
         }
 
         skip.addAction(UIAction { _ in
-            print("[TestHost] SKIP_TAPPED")
+            FileHandle.standardError.write(Data("[TestHost] SKIP_TAPPED\n".utf8))
             goHome("跳过按钮")
         }, for: .touchUpInside)
         close.addAction(UIAction { _ in
-            print("[TestHost] CLOSE_TAPPED")
+            FileHandle.standardError.write(Data("[TestHost] CLOSE_TAPPED\n".utf8))
             goHome("×按钮")
         }, for: .touchUpInside)
 
@@ -55,7 +61,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         win.rootViewController = ad
         win.makeKeyAndVisible()
         self.window = win
-        print("[TestHost] AD_SHOWN skip=(240,90,140x48) close=(340,60,44x44)")
+        FileHandle.standardError.write(Data("[TestHost] AD_SHOWN skip=(240,90,140x48) close=(340,60,44x44)\n".utf8))
         return true
     }
 }
+
+UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(AppDelegate.self))

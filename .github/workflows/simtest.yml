@@ -36,6 +36,8 @@ jobs:
             -sdk "$SYSROOT" -target arm64-apple-ios15.0-simulator \
             -o TestHost.app/TestHost -framework UIKit
           cp TestHost/Info.plist TestHost.app/Info.plist
+          # dlopen 需要 dylib 在 app bundle 内（模拟 TrollyFools 注入后的位置）
+          cp AdSkipper_sim.dylib TestHost.app/AdSkipper_sim.dylib
           ls -la TestHost.app
 
       - name: Boot simulator, inject dylib, run
@@ -48,8 +50,8 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" TestHost.app
           # 不用 --console（模拟器 NSLog 不进 stdout，靠沙盒日志文件断言）
-          SIMCTL_CHILD_DYLD_INSERT_LIBRARIES="$PWD/AdSkipper_sim.dylib" \
-            xcrun simctl launch "$UDID" wb.testhost
+          # 不用 DYLD_INSERT（arm64 模拟器不生效）；TestHost main.swift 顶层 dlopen 加载 bundle 内 dylib
+          xcrun simctl launch "$UDID" wb.testhost
           sleep 25
           DATA=$(xcrun simctl get_app_container "$UDID" wb.testhost data)
           echo "data container: $DATA"
