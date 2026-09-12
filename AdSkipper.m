@@ -445,10 +445,13 @@ static void createFloatingBall(void) {
         w.frame = CGRectMake(scr.width - bs - 6, scr.height * 0.22, bs, bs);
         w.windowLevel = UIWindowLevelAlert + 99;
         w.backgroundColor = [UIColor clearColor];
-        w.rootViewController = [UIViewController new];
+        UIViewController *rvc = [UIViewController new];
+        w.rootViewController = rvc;
+        [rvc loadViewIfNeeded];   // 强制加载 rootVC.view，避免它延迟加载后盖住按钮
 
         ASBallButton *b = [ASBallButton buttonWithType:UIButtonTypeCustom];
-        b.frame = w.bounds;
+        b.frame = rvc.view.bounds;
+        b.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         b.layer.cornerRadius = bs / 2.0;
         b.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
         b.layer.borderWidth = 1.0;
@@ -458,7 +461,8 @@ static void createFloatingBall(void) {
         b.titleLabel.font = [UIFont boldSystemFontOfSize:17];
         b.userInteractionEnabled = YES;
 
-        // 拖动手势挂在窗口层，与按钮的触摸处理解耦
+        // 按钮挂 rootVC.view（窗口的正式内容层），拖动手势挂在窗口层
+        [rvc.view addSubview:b];
         UIPanGestureRecognizer *pan =
             [[UIPanGestureRecognizer alloc] initWithTarget:[ASBallHelper class] action:@selector(onDrag:)];
         [w addGestureRecognizer:pan];
