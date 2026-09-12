@@ -223,7 +223,8 @@ static UIImage *captureScreen(void) {
 // results: VNRecognizedText 数组（boundingBox 为归一化、左下原点）
 static void runOCR(UIImage *img, void (^done)(NSArray *results)) {
     VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc]
-        initWithCompletionHandler:^(VNRequest *request) {
+        initWithCompletionHandler:^(VNRequest *request, NSError *reqErr) {
+            (void)reqErr;
             done(request.results ?: @[]);
         }];
     req.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
@@ -270,7 +271,7 @@ static BOOL tapView(UIView *hit) {
                     t = [entry valueForKey:@"target"];
                     id act = [entry valueForKey:@"action"];
                     if ([act isKindOfClass:[NSString class]]) sel = NSSelectorFromString(act);
-                    else if (act) sel = (SEL)act;
+                    else if ([act isKindOfClass:[NSValue class]]) [act getValue:&sel];
                 } @catch (NSException *e) { continue; }
                 if (t && sel && [t respondsToSelector:sel]) {
                     #pragma clang diagnostic push
@@ -393,7 +394,7 @@ static void startMonitor(void) {
 
                         BOOL kw = NO;
                         for (NSString *k in kKeywords) {
-                            if ([s lowercaseString] containsString:[k lowercaseString]) { kw = YES; break; }
+                            if ([[s lowercaseString] containsString:[k lowercaseString]]) { kw = YES; break; }
                         }
 
                         if (kw) {

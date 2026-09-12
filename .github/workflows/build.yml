@@ -21,7 +21,6 @@ jobs:
             -miphoneos-version-min=15.0
             -isysroot "$SYSROOT"
             -fobjc-arc
-            -fapplication-extension
             -fvisibility=hidden
             -O2
             -Wall
