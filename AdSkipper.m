@@ -385,6 +385,9 @@ static void startMonitor(void);
 static UIWindow *g_ballWin = nil;
 static NSString *g_lastReport = @"(还没有运行记录)";
 
+static void showMenu(void);
+static void createFloatingBall(void);
+
 // 按钮子类：直接接管触摸，不走 UIControl 事件（避免被拖动手势吞掉轻点）
 @interface ASBallButton : UIButton
 @end
@@ -410,9 +413,6 @@ static NSString *g_lastReport = @"(还没有运行记录)";
 @interface ASBallHelper : NSObject
 + (void)onDrag:(UIPanGestureRecognizer *)p;
 @end
-
-static void showMenu(void);
-static void createFloatingBall(void);
 
 @implementation ASBallHelper
 + (void)onDrag:(UIPanGestureRecognizer *)p {
