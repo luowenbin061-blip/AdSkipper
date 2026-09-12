@@ -557,31 +557,6 @@ static void showSettings(void) {
     });
 }
 
-// 诊断报告弹窗：监控结束 / 命中后弹出，证明 dylib 已加载 + 说明结果
-static void showReport(NSString *msg) {
-    ALog(@"report: %@", msg);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @try {
-            UIViewController *vc = presentVC();
-            if (!vc) return;
-            UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"AdSkipper"
-                message:msg preferredStyle:UIAlertControllerStyleAlert];
-            [ac addAction:[UIAlertAction actionWithTitle:@"⚙ 设置" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-                showSettings();
-            }]];
-            [ac addAction:[UIAlertAction actionWithTitle:@"📋 复制日志" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-                NSString *log = [NSString stringWithContentsOfFile:g_logPath
-                                                          encoding:NSUTF8StringEncoding error:nil];
-                [UIPasteboard generalPasteboard].string = log ?: @"(日志为空)";
-            }]];
-            [ac addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
-            [vc presentViewController:ac animated:YES completion:nil];
-        } @catch (NSException *e) {
-            ALog(@"report exception: %@", e);
-        }
-    });
-}
-
 static void startMonitor(void) {
     if (g_started || g_done) return;
     g_started = YES;
