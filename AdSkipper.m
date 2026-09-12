@@ -376,6 +376,126 @@ static UIViewController *presentVC(void) {
     return vc;
 }
 
+#pragma mark - 悬浮球（常驻功能入口，可拖动）
+
+static void showSettings(void);
+static void showReport(NSString *msg);
+static void startMonitor(void);
+
+static UIWindow *g_ballWin = nil;
+static NSString *g_lastReport = @"(还没有运行记录)";
+
+@interface ASBallHelper : NSObject
++ (void)onTap;
++ (void)onDrag:(UIPanGestureRecognizer *)p;
+@end
+
+static void showMenu(void);
+static void createFloatingBall(void);
+
+@implementation ASBallHelper
++ (void)onTap { showMenu(); }
++ (void)onDrag:(UIPanGestureRecognizer *)p {
+    UIView *v = p.view;
+    CGPoint t = [p translationInView:v];
+    CGPoint c = v.center;
+    c.x += t.x; c.y += t.y;
+    CGSize scr = v.superview.bounds.size;
+    c.x = MIN(MAX(c.x, 24), scr.width - 24);
+    c.y = MIN(MAX(c.y, 24), scr.height - 24);
+    v.center = c;
+    [p setTranslation:CGPointZero inView:v];
+}
+@end
+
+static void createFloatingBall(void) {
+    if (g_ballWin) return;
+    @try {
+        UIWindowScene *scene = nil;
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+            if ([s isKindOfClass:[UIWindowScene class]] &&
+                s.activationState == UISceneActivationStateForegroundActive) {
+                scene = (UIWindowScene *)s; break;
+            }
+        }
+        if (!scene) return;
+        CGSize scr = scene.screen.bounds.size;
+        CGFloat bs = 40.0;
+        UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
+        w.frame = CGRectMake(scr.width - bs - 6, scr.height * 0.22, bs, bs);
+        w.windowLevel = UIWindowLevelAlert + 99;
+        w.backgroundColor = [UIColor clearColor];
+        w.rootViewController = [UIViewController new];
+
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+        b.frame = w.bounds;
+        b.layer.cornerRadius = bs / 2.0;
+        b.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.5];
+        b.layer.borderWidth = 1.0;
+        b.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.45].CGColor;
+        b.clipsToBounds = YES;
+        [b setTitle:@"A" forState:UIControlStateNormal];
+        b.titleLabel.font = [UIFont boldSystemFontOfSize:17];
+        [b addTarget:[ASBallHelper class] action:@selector(onTap) forControlEvents:UIControlEventTouchUpInside];
+        UIPanGestureRecognizer *pan =
+            [[UIPanGestureRecognizer alloc] initWithTarget:[ASBallHelper class] action:@selector(onDrag:)];
+        [b addGestureRecognizer:pan];
+
+        [w addSubview:b];
+        w.hidden = NO;
+        g_ballWin = w;
+        ALog(@"floating ball created at (%.0f, %.0f)", w.frame.origin.x, w.frame.origin.y);
+    } @catch (NSException *e) {
+        ALog(@"ball exception: %@", e);
+    }
+}
+
+static void showMenu(void) {
+    UIViewController *vc = presentVC();
+    if (!vc) return;
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"AdSkipper"
+        message:[NSString stringWithFormat:@"监控 %@ · %@", g_done ? @"已结束" : @"待命中", g_lastReport]
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    ac.popoverPresentationController.sourceView = vc.view;   // iPad 必需，iPhone 无副作用
+    [ac addAction:[UIAlertAction actionWithTitle:@"⚙ 设置（关键词 / 坐标回放）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        showSettings();
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"▶ 重新扫描 10 秒" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        g_started = NO; g_done = NO; g_rounds = 0; g_ocrTexts = 0; g_crossStreak = 0;
+        startMonitor();
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"📊 上次结果" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        showReport(g_lastReport);
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"📋 复制日志" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        NSString *log = [NSString stringWithContentsOfFile:g_logPath encoding:NSUTF8StringEncoding error:nil];
+        [UIPasteboard generalPasteboard].string = log ?: @"(日志为空)";
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"关闭菜单" style:UIAlertActionStyleCancel handler:nil]];
+    [vc presentViewController:ac animated:YES completion:nil];
+}
+
+// 诊断报告弹窗：命中时弹出反馈；未命中只记录（悬浮球菜单里看）
+static void showReport(NSString *msg) {
+    ALog(@"report: %@", msg);
+    g_lastReport = msg;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            UIViewController *vc = presentVC();
+            if (!vc) return;
+            UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"AdSkipper"
+                message:msg preferredStyle:UIAlertControllerStyleAlert];
+            [ac addAction:[UIAlertAction actionWithTitle:@"⚙ 设置" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+                showSettings();
+            }]];
+            [ac addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
+            [vc presentViewController:ac animated:YES completion:nil];
+        } @catch (NSException *e) {
+            ALog(@"report exception: %@", e);
+        }
+    });
+}
+
 // 坐标序列回放："x1,y1,等几秒;x2,y2,等几秒"（等几秒 = 相对当前时刻的延迟基数，逐段各自计时）
 static void scheduleFixedTaps(NSString *spec) {
     if (spec.length == 0) return;
@@ -623,8 +743,8 @@ static void startMonitor(void) {
         }
         if (!g_done) {
             ALog(@"watch window ended without hit (rounds=%d, ocrTexts=%d)", g_rounds, g_ocrTexts);
-            showReport([NSString stringWithFormat:@"⏱ 10 秒内未识别到广告按钮\n监控 %d 轮 · OCR 共识别文字 %d 条\n（若识别 0 条，该 App 可能不支持截屏）",
-                        g_rounds, g_ocrTexts]);
+            g_lastReport = [NSString stringWithFormat:@"⏱ 10 秒内未识别到广告按钮\n监控 %d 轮 · OCR 共识别文字 %d 条\n（若识别 0 条，该 App 可能不支持截屏）",
+                        g_rounds, g_ocrTexts];
             stopAndCleanup();
         }
     });
@@ -646,21 +766,27 @@ static void adskipper_init(void) {
         g_tokenScene = [nc addObserverForName:UISceneDidActivateNotification
                                        object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
             ALog(@"scene did activate");
+            createFloatingBall();
             startMonitor();
         }];
         g_tokenLaunch = [nc addObserverForName:UIApplicationDidFinishLaunchingNotification
                                         object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
             ALog(@"app did finish launching");
+            createFloatingBall();
             startMonitor();
         }];
         // 兜底：通知可能已错过（注入前 App 已在跑 / 无 scene 的老 App）
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
             if (s.activationState == UISceneActivationStateForegroundActive) {
                 ALog(@"active scene found at arm time");
+                createFloatingBall();
                 startMonitor();
                 break;
             }
         }
-        ALog(@"armed (v1, watching for splash-ad buttons)");
+        // 双保险：1.5 秒后再试一次悬浮球（scene 可能刚就绪）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ createFloatingBall(); });
+        ALog(@"armed (v3, ball + watch for splash-ad buttons)");
     });
 }
