@@ -385,6 +385,11 @@ static void startMonitor(void);
 static UIWindow *g_ballWin = nil;
 static NSString *g_lastReport = @"(还没有运行记录)";
 
+// 自测模式：NSUserDefaults "adskipper_selftest"=YES 时，
+// 不截屏，改从 app bundle 读 adskipper_selftest.png 跑完整识别链（云端模拟器 e2e 用）
+static BOOL g_selftest = NO;
+static UIImage *g_selftestImg = nil;
+
 static void showMenu(void);
 static void createFloatingBall(void);
 
@@ -632,8 +637,23 @@ static void startMonitor(void) {
                     continue;
                 }
 
-                // ① 截屏（主线程合成）
-                UIImage *img = captureScreen();
+                // ① 截屏（主线程合成）；自测模式改用 bundle 内预置广告图
+                UIImage *img = nil;
+                if (g_selftest) {
+                    if (!g_selftestImg) {
+                        NSString *p = [[NSBundle mainBundle] pathForResource:@"adskipper_selftest" ofType:@"png"];
+                        g_selftestImg = p ? [UIImage imageWithContentsOfFile:p] : nil;
+                        if (g_selftestImg) {
+                            ALog(@"selftest: image loaded (%.0fx%.0f pts, scale %.0fx)",
+                                 g_selftestImg.size.width, g_selftestImg.size.height, g_selftestImg.scale);
+                        } else {
+                            ALog(@"selftest: adskipper_selftest.png NOT found in bundle");
+                        }
+                    }
+                    img = g_selftestImg;
+                } else {
+                    img = captureScreen();
+                }
                 if (!img || img.size.width < 2) {
                     [NSThread sleepForTimeInterval:kIdleGap];
                     continue;
@@ -745,6 +765,14 @@ static void startMonitor(void) {
                 // ④ 点击 → 成功即停
                 if (found) {
                     ALog(@"hit (%@) at (%.0f, %.0f) → tapping", hitWhy, hitPt.x, hitPt.y);
+                    if (g_selftest) {
+                        // 自测模式：识别+坐标解析链已验证，不真点（模拟器坐标系不可信）
+                        ALog(@"tapped OK, done");
+                        showReport([NSString stringWithFormat:@"✅ 自测通过\n识别来源：%@（第 %d 轮，共识别文字 %d 条）",
+                                    hitWhy, g_rounds, g_ocrTexts]);
+                        stopAndCleanup();
+                        break;
+                    }
                     if (tapAtPoint(hitPt, winsDesc)) {
                         ALog(@"tapped OK, done");
                         showReport([NSString stringWithFormat:@"✅ 已自动点击\n识别来源：%@（第 %d 轮，共识别文字 %d 条）",
@@ -773,6 +801,8 @@ static void adskipper_init(void) {
     g_armed = YES;
     g_queue = dispatch_queue_create("wb.adskipper.monitor", DISPATCH_QUEUE_SERIAL);
     kKeywords = loadKeywords();
+    g_selftest = [[NSUserDefaults standardUserDefaults] boolForKey:@"adskipper_selftest"];
+    if (g_selftest) ALog(@"SELFTEST mode ON (bundled image replaces capture)");
 
     // constructor 时 UIKit 尚未就绪 → 延迟后挂通知（MiMo 评审意见：别在 constructor 里直接跑）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kStartupDelay * NSEC_PER_SEC)),

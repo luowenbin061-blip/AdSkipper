@@ -38,6 +38,7 @@ jobs:
           cp TestHost/Info.plist TestHost.app/Info.plist
           # dlopen 需要 dylib 在 app bundle 内（模拟 TrollyFools 注入后的位置）
           cp AdSkipper_sim.dylib TestHost.app/AdSkipper_sim.dylib
+          cp TestHost/adskipper_selftest.png TestHost.app/
           ls -la TestHost.app
 
       - name: Boot simulator, inject dylib, run
@@ -51,7 +52,8 @@ jobs:
           xcrun simctl install "$UDID" TestHost.app
           # 不用 --console（模拟器 NSLog 不进 stdout，靠沙盒日志文件断言）
           # 不用 DYLD_INSERT（arm64 模拟器不生效）；TestHost main.swift 顶层 dlopen 加载 bundle 内 dylib
-          xcrun simctl launch "$UDID" wb.testhost
+          # -adskipper_selftest 1 → NSArgumentDomain，插件改用 bundle 内预置广告图跑识别链
+          xcrun simctl launch "$UDID" wb.testhost -adskipper_selftest 1
           sleep 25
           DATA=$(xcrun simctl get_app_container "$UDID" wb.testhost data)
           echo "data container: $DATA"
