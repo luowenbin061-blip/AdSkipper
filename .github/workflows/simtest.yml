@@ -1,0 +1,80 @@
+name: simtest
+
+on:
+  push:
+    branches: [main]
+    paths: ['AdSkipper.m', 'TestHost/**', '.github/workflows/simtest.yml']
+  workflow_dispatch:
+
+jobs:
+  sim:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dylib (iphonesimulator, arm64)
+        run: |
+          set -e
+          SYSROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          xcrun -sdk iphonesimulator clang -dynamiclib \
+            -arch arm64 \
+            -miphonesimulator-version-min=15.0 \
+            -isysroot "$SYSROOT" \
+            -fobjc-arc -fvisibility=hidden -O2 \
+            -install_name @rpath/AdSkipper.dylib \
+            -o AdSkipper_sim.dylib AdSkipper.m \
+            -framework Foundation -framework UIKit -framework Vision \
+            -framework CoreGraphics -framework QuartzCore
+          file AdSkipper_sim.dylib
+
+      - name: Build test host app
+        run: |
+          set -e
+          mkdir -p TestHost.app
+          SYSROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          xcrun -sdk iphonesimulator swiftc TestHost/main.swift \
+            -sdk "$SYSROOT" -target arm64-apple-ios15.0-simulator \
+            -o TestHost.app/TestHost -framework UIKit
+          cp TestHost/Info.plist TestHost.app/Info.plist
+          ls -la TestHost.app
+
+      - name: Boot simulator, inject dylib, run
+        run: |
+          set -e
+          xcrun simctl list devices available | grep iPhone || true
+          UDID=$(xcrun simctl list devices available | grep -E "iPhone (15|16|14)" | head -1 | grep -oE "[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}")
+          echo "Using UDID=$UDID"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" TestHost.app
+          SIMCTL_CHILD_DYLD_INSERT_LIBRARIES="$PWD/AdSkipper_sim.dylib" \
+            xcrun simctl launch --console-pty "$UDID" wb.testhost > sim.log 2>&1 &
+          sleep 30
+          echo "================ sim.log ================"
+          cat sim.log
+          echo "========================================="
+
+      - name: Verdict
+        run: |
+          PASS=1
+          for m in "armed" "floating ball created" "monitor start" "tapped OK, done"; do
+            if grep -q "\[AdSkipper\] $m" sim.log; then
+              echo "PASS: $m"
+            else
+              echo "FAIL: $m"
+              PASS=0
+            fi
+          done
+          if [ "$PASS" = "1" ]; then
+            echo "E2E RESULT: ALL PASS"
+          else
+            echo "E2E RESULT: FAILED"
+            exit 1
+          fi
+
+      - name: Upload sim log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-log
+          path: sim.log
