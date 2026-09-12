@@ -201,7 +201,7 @@ static UIImage *captureScreen(void) {
 
             UIScreen *scr = scene.screen ?: [UIScreen mainScreen];
             CGSize pts = scr.bounds.size;
-            UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat format];
+            UIGraphicsImageRendererFormat *fmt = [[UIGraphicsImageRendererFormat alloc] init];
             fmt.scale = scr.scale;   // img.size = 像素尺寸
             fmt.opaque = NO;
             UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:pts format:fmt];
